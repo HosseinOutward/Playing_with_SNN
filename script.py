@@ -1,93 +1,124 @@
+import torch
 import torch.nn as nn
+import numpy as np
+from matplotlib import pyplot as plt
 
 
-class Residual(nn.Module):
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
+def make_dataset():
+    x1 = np.random.normal(0, 1, (4, 2))
+    # concatenate two 2d vectors
+    x1 = np.concatenate(([x1 + np.random.normal(0, 0.01, x1.shape) for _ in range(100)]), axis=0)
+    x1 = x1 + np.random.normal(0, 0.2, x1.shape)
+    x1 = x1[np.random.permutation(len(x1))]
+    y1 = np.ones(x1.shape[0])
 
-    def forward(self, x):
-        return self.fn(x) + x
+    x2 = np.random.normal(0, 1, (4, 2))
+    # concatenate two 2d vectors
+    x2 = np.concatenate(([x2 + np.random.normal(0, 0.01, x2.shape) for _ in range(100)]), axis=0)
+    x2 = x2 + np.random.normal(0, 0.2, x2.shape)
+    x2 = x2[np.random.permutation(len(x2))]
+    y2 = np.ones(x2.shape[0])
 
+    y1 = np.array([np.zeros(y2.shape[0]), y1]).T
+    y2 = np.array([y2, np.zeros(y1.shape[0])]).T
+    y = np.concatenate((y1, y2), axis=0)
+    x = np.concatenate((x1, x2), axis=0)
 
-def ConvMixer(dim, depth, kernel_size=9, patch_size=7, n_classes=1000):
-    return nn.Sequential(
-        nn.Conv2d(3, dim, kernel_size=patch_size, stride=patch_size),
-        nn.GELU(),
-        nn.BatchNorm2d(dim),
-        *[nn.Sequential(
-            Residual(nn.Sequential(
-                nn.Conv2d(dim, dim, kernel_size, groups=dim, padding="same"),
-                nn.GELU(),
-                nn.BatchNorm2d(dim)
-            )),
-            nn.Conv2d(dim, dim, kernel_size=1),
-            nn.GELU(),
-            nn.BatchNorm2d(dim)
-        ) for i in range(depth)],
-        nn.AdaptiveAvgPool2d((1, 1)),
-        nn.Flatten(),
-        nn.Linear(dim, n_classes)
-    )
+    a = np.random.permutation(int(x.shape[0] / 1.1))
+    x = x[a]
+    y = y[a]
+    y = y[~np.isnan(x).any(axis=1)]
+    x = x[~np.isnan(x).any(axis=1)]
+    plt.scatter(x[:, 0], x[:, 1], c=y[:, 0])
+    plt.show()
 
-
-def DeConvMixer(dim, depth, kernel_size=9, patch_size=7, n_classes=1000):
-    return nn.Sequential(
-        nn.Linear(dim, n_classes),
-        nn.Unflatten(dim,(dim,dim)),
-        nn.AdaptiveAvgPool2d((1, 1)),
-        *[
-            nn.Sequential(
-                nn.BatchNorm2d(dim),
-                nn.GELU(),
-                nn.ConvTranspose2d(dim, dim, kernel_size=1),
-                Residual(nn.Sequential(
-                    nn.ConvTranspose2d(dim, dim, kernel_size, groups=dim, padding="same"),
-                    nn.GELU(),
-                    nn.BatchNorm2d(dim)
-                )),
-            )
-        for i in range(depth)],
-        nn.BatchNorm2d(dim),
-        nn.GELU(),
-        nn.ConvTranspose2d(3, dim, kernel_size=patch_size, stride=patch_size),
-    )
+    return x, y
 
 
-def fit(model, train_loader, val_loader,epochs=10,learning_rate=0.001):
-    best_valid = None
-    history = []
-    optimizer = torch.optim.Adam(model.parameters(), learning_rate,weight_decay=0.0005)
-    for epoch in range(epochs):
-        # Training Phase
-        model.train()
-        train_losses = []
-        train_accuracy = []
-        for batch in tqdm(train_loader):
-            loss,accu = model.training_step(batch)
-            train_losses.append(loss)
-            train_accuracy.append(accu)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-        # Validation phase
-        result = evaluate(model, val_loader)
-        result['train_loss'] = torch.stack(train_losses).mean().item()
-        result['train_accuracy'] = torch.stack(train_accuracy).mean().item()
-        model.epoch_end(epoch, result)
-        if(best_valid == None or best_valid<result['Accuracy']):
-            best_valid=result['Accuracy']
-            torch.save(model.state_dict(), 'cifar10-cnn.pth')
-        history.append(result)
-    return history
+def make_model(x, y):
+    class Net(nn.Module):
+        def __init__(self):
+            super(Net, self).__init__()
+            self.fc1 = nn.Linear(2, 4)
+            self.fc2 = nn.Linear(4, 5)
+            self.fc3 = nn.Linear(5, 2)
+
+        def forward(self, x):
+            x = self.fc1(x)
+            x = torch.relu(x)
+            x = self.fc2(x)
+            x = torch.relu(x)
+            x = self.fc3(x)
+            x = torch.sigmoid(x)
+            return x
+
+    model = Net()
+    # train model on x and y
+    optimizer = torch.optim.Adamax(model.parameters(), lr=0.08)
+    loss_func = nn.MSELoss()
+    for epoch in range(2000):
+        prediction = model(torch.from_numpy(x).float())
+        loss = loss_func(prediction, torch.from_numpy(y).float())
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        if epoch % 200 == 0:
+            print('Epoch: ', epoch, '| train loss: %.4f' % loss.data.numpy())
+
+    plt.scatter(x[:, 0], x[:, 1], c=model(torch.from_numpy(x).float()).data.numpy()[:, 0])
+    plt.show()
+
+    return model
 
 
-if __name__=='__main__':
-    from torchvision.datasets import CIFAR10
-    from torchvision.transforms import ToTensor
-    import torch
-    dataset = CIFAR10(root='data/', download=True, transform=ToTensor())
-    test_dataset = CIFAR10(root='data/', train=False, transform=ToTensor())
-    torch.device('cuda')
-    ConvMixer(256,10)
+def get_changed_weight(x, wb, model):
+    a = [torch.from_numpy(x.copy()).float()]
+    b = [torch.from_numpy(x.copy()).float()]
+    for i in range(len(wb[0])):
+        a.append(eval('model.fc%s(b[-1])' % (i + 1)))
+        b.append(torch.relu(a[-1]))
+    b.pop(-1)
+    b.append(torch.sigmoid(a[-1] - 5))
+    for i in range(len(a)):
+        a[i] = a[i].data.numpy().copy()
+        b[i] = b[i].data.numpy().copy()
+    a.pop(0)
+    b.pop(0)
 
+    f = lambda x: abs(x).max()  # np.percentile(abs(x).max(),99.9)
+    wb = wb.copy()
+    for i in range(len(wb[0])):
+        for j in range(len(wb[0][i])):
+            if i == len(wb[0]) - 1: continue
+            m = a[i][:, j]
+            if max(m) <= 0: continue
+            wb[0][i][j] /= f(m)
+            wb[1][i][j] /= f(m)
+
+        for j in range(len(wb[0][i].T)):
+            if i == 0: continue
+            m = a[i - 1][:, j]
+            if max(m) <= 0: continue
+            wb[0][i][:, j] *= f(m)
+
+    return wb, (a,b)
+
+
+if __name__ == '__main__':
+    x, y = make_dataset()
+    model = make_model(x, y)
+
+    w = list(model.parameters())
+    wb, (a,b) = [[w[i].data.numpy().copy() for i in range(0, len(w), 2)],
+          [w[i].data.numpy().copy() for i in range(1, len(w), 2)]]
+
+    wb=get_changed_weight(x,wb,model)
+    snn_model=SNN(wb[0],wb[1],fin_act=lambda x:1/(1+np.exp(-x)),layer_type=Layer)
+
+    # snn_model=SNN(wb[0],wb[1],fin_act=lambda x:1/(1+np.exp(-x)),layer_type=AlterLayer)
+
+    xx = x.astype('float64')[2]
+    t = 1000
+    print(model(torch.from_numpy(xx.copy()).float()).data.numpy() * 1000 // 1 / 1000)
+    print(snn_model(xx, t) * 1000 // 1 / 1000)
+    print(snn_model.abstract_n(xx, t) * 1000 // 1 / 1000)
