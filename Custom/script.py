@@ -159,7 +159,7 @@ def proc_vs_acc(snn,ann,x_tensor,y_tensor,t,ylim=None):
     plt.scatter(time_snn,acc_snn,alpha=0.01,s=1)
     plt.plot(time_snn,acc_snn,alpha=0.005)
 
-    perc=lambda x: np.percentile(x,50,axis=1)
+    perc=lambda x: np.percentile(x,70,axis=1)
     plt.scatter(perc(time_snn),perc(acc_snn),s=15)
     plt.plot(perc(time_snn),perc(acc_snn))
 
@@ -170,6 +170,32 @@ def proc_vs_acc(snn,ann,x_tensor,y_tensor,t,ylim=None):
     plt.show()
 
 
+def snn_min_norm(x_tensor,IFsnn,t):
+    for i,l in enumerate(IFsnn.fc):
+        if str(type(l)) != "<class \'__main__.AIFNode\'>": continue
 
+        torch.cuda.empty_cache()
+        with torch.no_grad():
+            functional.reset_net(IFsnn)
+            for _ in range(t): IFsnn(x_tensor)
+
+            mult=[]
+            for sxx in l.history_s:
+                mult.append([])
+                for neu in sxx:
+                    while neu[0]==0: neu=neu[1:]
+                    while neu[-1]!=0: neu=neu[:-1]
+                    num_ones=(neu==0.).sum().data.cpu().numpy()
+                    num_zeros=(len(neu)-num_ones)
+                    mult[-1].append(num_zeros/num_ones)
+
+            mult=np.array(mult).min(1)
+
+            spike_max=torch.quantile(torch.cat(l.history_s),0.999,0,False,interpolation='lower')#
+            spike_max[spike_max==0.]=1.
+
+            AIFsnn.fc[i-1].bias = torch.nn.Parameter(torch.div(AIFsnn.fc[i-1].bias,spike_max))
+            AIFsnn.fc[i-1].weight=torch.nn.Parameter(torch.div(AIFsnn.fc[i-1].weight.T,spike_max).T)
+            AIFsnn.fc[i+1].weight=torch.nn.Parameter(torch.mul(AIFsnn.fc[i+1].weight,spike_max))
 
 
