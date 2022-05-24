@@ -26,9 +26,9 @@ class Layer:
         self.U = self.U*0
         self.N = self.U.copy()
 
-        self.history_U = [self.U.copy()]
-        self.history_S = [self.N.copy()]
-        self.history_N = [self.N.copy()]
+        # self.history_U = [self.U.copy()]
+        # self.history_S = [self.N.copy()]
+        # self.history_N = [self.N.copy()]
 
     def forward(self, inp):
         x, spiked = self.simulate(inp)
@@ -52,47 +52,22 @@ class Layer:
         return spiked
 
     def abstract_n(self, inp, t, rou=4):
-        if len(np.array(inp).shape) == 2:
+        if len(np.array(inp).shape) == 3:
             return np.array([self.abstract_n(xx, t) for xx in inp])
-        aw=np.dot(self.W, inp) + self.b * t
-        return np.floor(relu((aw + relu(-self.abstract_v(inp, t))).round(rou)))
-        # return (aw-self.abstract_v(inp, t)).round(rou)
 
-        # v=self.history_U[t]
-        # def f(A,V):
-        #     if -V>0:
-        #         if A-V>0:return np.floor((A-V).round(rou))
-        #         else: return 0
-        #     else:
-        #         if A>0: return np.floor(A.round(rou))
-        #         else: return 0
-        # def f(A,V):
-        #     if V<0 and A>V:return np.floor((A-V).round(rou))
-        #     if V<0 and A<=V: return 0
-        #     if V>=0 and A>0: return np.floor(A.round(rou))
-        #     if V>=0 and A<=0: return 0
-        # return np.array([f(aa,vv) for aa,vv in zip(aw,v)])
+        result=[np.dot(self.W, inp[0])]
+        for tt,Nk_1_t in enumerate(inp[1:],1):
+            IK = np.dot(self.W, Nk_1_t) + self.b*tt
+            NK_t = np.array([result[-1], np.floor(relu(IK))]).max(0)
+            result.append(NK_t)
+        return np.array(result)
 
-    def abstract_v(self, inp, t):
-        if len(np.array(inp).shape) == 2:
-            return np.array([self.abstract_v(xx, t) for xx in inp])
-        return self.history_U[t]
-        # return aw-self.abstract_n(inp, t)
-        # return aw-(aw>0)*np.floor(aw)
+    def abstract_v(self, NK, NK_1, t):
+        if len(np.array(NK).shape) == 3:
+            return np.array([self.abstract_v(xx,xx1, t) for xx,xx1 in zip(NK,NK_1)])
 
-        # aw=np.dot(self.W, inp) + self.b * t
-        # v=self.history_U[t]
-        # p=np.dot(self.W*(self.W>0), inp) + self.b*(self.b>0) * t
-        # self.VA=[]
-        # def f(A,V,P):
-        #     VA = list(range(int(np.ceil(A.round(4))),int(np.ceil(P.round(4)))))
-        #     if A.round(4)//1==A.round(4): VA.append(A.round(4))
-        #     self.VA.append(A-np.array(VA))
-        #
-        #     if V<0 and A>V: return A-np.floor((A-V).round(4))
-        #     else: return A-np.floor(relu(A).round(4))
-        #
-        # return np.array([f(aa,vv,pp) for aa,vv,pp in zip(aw,v,p)])
+        IK=np.dot(self.W, NK_1) + self.b * t
+        return IK-NK
 
     def plot_history(self, lim, ylim=None):
         plt.rcParams['figure.figsize'] = (20, 10)
@@ -167,18 +142,20 @@ class SNN:
         return self.final_activation(self.layers[-1].N / t)
 
     def abstract_n_layer(self, x, t, lim):
-        x = x * t
+        x = np.array([x*tt for tt in range(t+1)])
         for l in self.layers[:lim+1]:
             x = l.abstract_n(x.copy(), t)
-        return x
+        return x[-1]
 
     def abstract_n(self, x, t):
         return self.final_activation(self.abstract_n_layer(x, t, len(self.layers)) / t)
 
     def abstract_v_layer(self, x, t, lim):
-        x = x * t
-        for l in self.layers[:lim]: x = l.abstract_n(x.copy(), t)
-        return self.layers[lim].abstract_v(x.copy(), t)
+        x = np.array([x*tt for tt in range(t+1)])
+        for l in self.layers[:lim+1]:
+            x_pre=x.copy()
+            x=l.abstract_n(x.copy(), t)
+        return self.layers[lim].abstract_v(x[-1],x_pre[-1], t)
 
     def abstract_v(self, x, t):
         return self.final_activation(self.abstract_v_layer(x, t, len(self.layers)) / t)
